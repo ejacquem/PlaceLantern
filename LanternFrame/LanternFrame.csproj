@@ -1,0 +1,26 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net48</TargetFramework>
+    <LangVersion>latest</LangVersion>
+    <AssemblyName>LanternFrame</AssemblyName>
+    <Version>1.0.0</Version>
+    <!-- Override on the command line: -p:ValheimDir="..." -p:ProfileDir="..." -->
+    <ValheimDir Condition="'$(ValheimDir)' == ''">C:\Program Files (x86)\Steam\steamapps\common\Valheim</ValheimDir>
+    <!-- r2modman / Thunderstore Mod Manager profile (contains BepInEx\core). Defaults to the "Default" profile. -->
+    <ProfileDir Condition="'$(ProfileDir)' == ''">$(APPDATA)\r2modmanPlus-local\Valheim\profiles\Default</ProfileDir>
+    <Managed>$(ValheimDir)\valheim_Data\Managed</Managed>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="Microsoft.NETFramework.ReferenceAssemblies" Version="1.0.3" PrivateAssets="all" />
+  </ItemGroup>
+  <ItemGroup>
+    <Reference Include="BepInEx"><HintPath>$(ProfileDir)\BepInEx\core\BepInEx.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="0Harmony"><HintPath>$(ProfileDir)\BepInEx\core\0Harmony.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="assembly_valheim"><HintPath>$(Managed)\assembly_valheim.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="UnityEngine"><HintPath>$(Managed)\UnityEngine.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="UnityEngine.CoreModule"><HintPath>$(Managed)\UnityEngine.CoreModule.dll</HintPath><Private>false</Private></Reference>
+  </ItemGroup>
+  <Target Name="CopyToProfile" AfterTargets="Build" Condition="Exists('$(ProfileDir)\BepInEx\plugins')">
+    <Copy SourceFiles="$(OutputPath)LanternFrame.dll" DestinationFolder="$(ProfileDir)\BepInEx\plugins\LanternFrame" ContinueOnError="true" />
+  </Target>
+</Project>
