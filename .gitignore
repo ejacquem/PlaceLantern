@@ -3,3 +3,4 @@ obj/
 .vs/
 *.user
 dist/
+extracted_assets/

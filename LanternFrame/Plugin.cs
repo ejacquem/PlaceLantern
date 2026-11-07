@@ -1,18 +1,25 @@
 using System;
+using System.Collections.Generic;
 using System.Linq;
 using BepInEx;
 using BepInEx.Configuration;
 using HarmonyLib;
+using UnityEngine;
 
 namespace LanternFrame
 {
-    [BepInPlugin(Guid, "Lantern Frame", "1.0.0")]
+    [BepInPlugin(Guid, "Lantern Frame", "1.1.0")]
     public class Plugin : BaseUnityPlugin
     {
         public const string Guid = "user.lanternframe";
 
         internal static ConfigEntry<string> AllowedNames;
         internal static ConfigEntry<bool> LogItems;
+        internal static ConfigEntry<bool> AllowVertical;
+        internal static ConfigEntry<bool> LightShadows;
+        internal static ConfigEntry<float> ShadowBias;
+        internal static ConfigEntry<float> ShadowNormalBias;
+        internal static ConfigEntry<float> LightRangeMultiplier;
 
         internal static BepInEx.Logging.ManualLogSource Log;
 
@@ -20,12 +27,39 @@ namespace LanternFrame
         {
             Log = Logger;
             AllowedNames = Config.Bind("General", "AllowedItems", "lantern",
-                "Comma-separated, case-insensitive fragments. An item can be placed on the horizontal item frame " +
+                "Comma-separated, case-insensitive fragments. An item can be placed on the item frame " +
                 "if its prefab name or shared name contains one of them. Default matches the Dvergr lantern.");
+            AllowVertical = Config.Bind("General", "AllowOnVerticalFrame", true,
+                "Also allow the items on the vertical item frame (the horizontal frame is always supported).");
             LogItems = Config.Bind("General", "LogAttachAttempts", false,
-                "Log the prefab/shared name of every item you try to put on a horizontal item frame (helps finding the right name).");
+                "Log the prefab/shared name of every item you try to put on an item frame (helps finding the right name).");
+
+            LightShadows = Config.Bind("Light", "CastShadows", true,
+                "true: the lantern's light casts shadows so walls block it. false: no shadows at all. " +
+                "Restart the game after changing.");
+            ShadowBias = Config.Bind("Light", "ShadowBias", 0.01f,
+                new ConfigDescription("Shadow bias. Lower values stop light leaking through thin walls but can cause shadow acne.",
+                new AcceptableValueRange<float>(0f, 2f)));
+            ShadowNormalBias = Config.Bind("Light", "ShadowNormalBias", 0.02f,
+                new ConfigDescription("Shadow normal bias. High values (Unity's default is 0.4) let light leak through thin walls.",
+                new AcceptableValueRange<float>(0f, 3f)));
+            LightRangeMultiplier = Config.Bind("Light", "RangeMultiplier", 1f,
+                new ConfigDescription("Multiplies the lantern's light range while on a frame (1 = vanilla). " +
+                "Lower it to reduce how far the light reaches. Restart the game after changing.",
+                new AcceptableValueRange<float>(0.1f, 2f)));
 
             new Harmony(Guid).PatchAll();
+        }
+
+        // Horizontal item frame prefab is "itemstandh", vertical is "itemstand"
+        // (clones get a "(Clone)" suffix; trophy stands are named "prop_itemstand_*" and are not matched).
+        internal static bool IsHorizontal(ItemStand stand) =>
+            stand.name.StartsWith("itemstandh", StringComparison.OrdinalIgnoreCase);
+
+        internal static bool IsSupportedStand(ItemStand stand)
+        {
+            if (IsHorizontal(stand)) return true;
+            return AllowVertical.Value && stand.name.StartsWith("itemstand", StringComparison.OrdinalIgnoreCase);
         }
 
         internal static bool IsAllowed(ItemDrop.ItemData item)
@@ -48,124 +82,117 @@ namespace LanternFrame
         }
     }
 
-    // Items without an "attach" child have no model on the stand: build one from the item prefab.
+    // The lantern's "attach" object (and its "equiped" child) is inactive in the prefab and carries the
+    // joint/rigidbody meant for the hand. Hand the stand a cleaned-up copy instead, with the lantern
+    // rotated and offset to sit properly on the frame. Doing it here (rather than after the visual is
+    // spawned) also covers frames that are rebuilt when the world loads.
     [HarmonyPatch(typeof(ItemStand), "GetAttachPrefab")]
     internal static class ItemStandAttachPrefabPatch
     {
-        private static readonly System.Collections.Generic.Dictionary<string, UnityEngine.GameObject> Cache =
-            new System.Collections.Generic.Dictionary<string, UnityEngine.GameObject>();
+        private static readonly Dictionary<string, GameObject> Cache = new Dictionary<string, GameObject>();
 
+        // Components removed from the copy, in an order that respects their dependencies.
         private static readonly string[] StripOrder =
-            { "ZSyncTransform", "Floating", "ItemDrop", "ZNetView", "Rigidbody", "Collider" };
+            { "ConfigurableJoint", "ZSyncTransform", "Floating", "ItemDrop", "ZNetView", "Collider", "Rigidbody" };
 
-        private static void Postfix(UnityEngine.GameObject item, ref UnityEngine.GameObject __result)
+        // Horizontal frame: the lantern's own orientation already looked right there, so no extra rotation.
+        private static readonly Vector3 HorizontalRotation = Vector3.zero;
+        private static readonly Vector3 HorizontalPosition = Vector3.zero;
+        private static readonly Vector3 VerticalRotation = new Vector3(90f, -90f, 0f);
+        private static readonly Vector3 VerticalPosition = new Vector3(0f, 0.56f, 0f);
+
+        // GetAttachPrefab is static, so the stand being updated comes from the SetVisualItem patch below.
+        private static void Postfix(GameObject item, ref GameObject __result)
         {
-            if (Plugin.LogItems.Value)
-                Plugin.Log.LogInfo($"GetAttachPrefab: item='{(item != null ? item.name : "null")}' result='{(__result != null ? __result.name : "null")}'");
-            if (Plugin.LogItems.Value && __result != null && item != null && item.name == "Lantern")
-            {
-                Plugin.Log.LogInfo("Lantern attach hierarchy:");
-                LogHierarchy(__result.transform, "  ");
-            }
-            if (__result != null || item == null) return;
+            var stand = ItemStandSetVisualItemPatch.Current;
+            if (stand == null || __result == null || item == null || !Plugin.IsSupportedStand(stand)) return;
             var drop = item.GetComponent<ItemDrop>();
             if (drop == null || !Plugin.IsAllowed(item.name, drop.m_itemData?.m_shared?.m_name)) return;
 
-            if (Plugin.LogItems.Value) LogHierarchy(item.transform, "");
+            bool horizontal = Plugin.IsHorizontal(stand);
+            string key = item.name + (horizontal ? "_h" : "_v");
 
-            UnityEngine.GameObject clone;
-            if (!Cache.TryGetValue(item.name, out clone) || clone == null)
+            GameObject clone;
+            if (!Cache.TryGetValue(key, out clone) || clone == null)
             {
-                // Inactive parent => no Awake/OnEnable runs while we strip the gameplay components.
-                var holder = new UnityEngine.GameObject("LanternFrame_holder");
-                holder.SetActive(false);
-                UnityEngine.Object.DontDestroyOnLoad(holder);
-                clone = UnityEngine.Object.Instantiate(item, holder.transform);
-                clone.name = item.name + "_attach";
-
-                var all = clone.GetComponentsInChildren<UnityEngine.Component>(true);
-                foreach (var key in StripOrder)
-                    foreach (var c in all)
-                        if (c != null && !(c is UnityEngine.Transform) && IsKind(c, key))
-                            UnityEngine.Object.DestroyImmediate(c);
-
-                Cache[item.name] = clone;
+                clone = Build(__result, key, horizontal);
+                Cache[key] = clone;
             }
             __result = clone;
         }
 
-        internal static void LogHierarchyPublic(UnityEngine.Transform t) { LogHierarchy(t, "    "); }
+        private static GameObject Build(GameObject source, string key, bool horizontal)
+        {
+            // Inactive parent => no Awake/OnEnable runs while we strip the gameplay components.
+            var holder = new GameObject("LanternFrame_holder");
+            holder.SetActive(false);
+            UnityEngine.Object.DontDestroyOnLoad(holder);
 
-        private static bool IsKind(UnityEngine.Component c, string key)
+            var clone = UnityEngine.Object.Instantiate(source, holder.transform);
+            clone.name = key;
+
+            foreach (var type in StripOrder)
+                foreach (var c in clone.GetComponentsInChildren<Component>(true))
+                    if (c != null && !(c is Transform) && IsKind(c, type))
+                        UnityEngine.Object.DestroyImmediate(c);
+
+            foreach (var t in clone.GetComponentsInChildren<Transform>(true))
+                if (t.name != "SFX") t.gameObject.SetActive(true);
+
+            // Set on the copy before it is ever enabled: LightLod reads the light's range as its base range in Awake.
+            bool shadows = Plugin.LightShadows.Value;
+            foreach (var light in clone.GetComponentsInChildren<Light>(true))
+            {
+                light.range *= Plugin.LightRangeMultiplier.Value;
+                light.shadows = shadows ? UnityEngine.LightShadows.Soft : UnityEngine.LightShadows.None;
+                if (shadows)
+                {
+                    light.shadowStrength = 1f;
+                    // The default biases are large enough for light to leak through thin walls.
+                    light.shadowBias = Plugin.ShadowBias.Value;
+                    light.shadowNormalBias = Plugin.ShadowNormalBias.Value;
+                }
+            }
+            // LightLod turns shadows on/off by distance (m_shadowLod) and drives their strength.
+            foreach (var lod in clone.GetComponentsInChildren<LightLod>(true))
+            {
+                var t = Traverse.Create(lod);
+                t.Field("m_shadowLod").SetValue(shadows);
+                if (!shadows) continue;
+                t.Field("m_shadowDistance").SetValue(Mathf.Max(t.Field("m_shadowDistance").GetValue<float>(), 20f));
+                t.Field("m_baseShadowStrength").SetValue(1f);
+            }
+
+            clone.transform.localPosition = Vector3.zero;
+            var equiped = clone.transform.Find("equiped");
+            if (equiped != null)
+            {
+                var mesh = equiped.Find("default");
+                if (mesh != null) mesh.localPosition = Vector3.zero;
+                equiped.localRotation = Quaternion.Euler(horizontal ? HorizontalRotation : VerticalRotation);
+                equiped.localPosition = horizontal ? HorizontalPosition : VerticalPosition;
+            }
+            return clone;
+        }
+
+        private static bool IsKind(Component c, string key)
         {
             for (var t = c.GetType(); t != null; t = t.BaseType)
                 if (t.Name == key) return true;
             return false;
         }
-
-        private static void LogHierarchy(UnityEngine.Transform t, string indent)
-        {
-            Plugin.Log.LogInfo(indent + t.name + " active=" + t.gameObject.activeSelf + " pos=" + t.localPosition +
-                " scale=" + t.localScale + " [" + string.Join(", ",
-                t.GetComponents<UnityEngine.Component>().Select(c => c.GetType().Name).ToArray()) + "]");
-            foreach (UnityEngine.Transform child in t) LogHierarchy(child, indent + "  ");
-        }
     }
 
-    // The lantern's "attach" (and its "equiped" child) are inactive in the prefab and carry a
-    // joint/rigidbody meant for the hand. Activate them, freeze physics and centre the model.
-    [HarmonyPatch(typeof(ItemStand), "UpdateAttach")]
-    internal static class ItemStandUpdateAttachPatch
+    // Remembers which stand is rebuilding its visual, for the static GetAttachPrefab patch above.
+    [HarmonyPatch(typeof(ItemStand), "SetVisualItem")]
+    internal static class ItemStandSetVisualItemPatch
     {
-        private static void FixLantern(UnityEngine.GameObject visual)
-        {
-            foreach (var t in visual.GetComponentsInChildren<UnityEngine.Transform>(true))
-            {
-                if (t.name == "SFX") continue;
-                if (!t.gameObject.activeSelf) t.gameObject.SetActive(true);
-            }
-            foreach (var c in visual.GetComponentsInChildren<UnityEngine.Component>(true))
-            {
-                if (c == null) continue;
-                var n = c.GetType().Name;
-                if (n == "ConfigurableJoint") UnityEngine.Object.Destroy(c);
-            }
-            foreach (var c in visual.GetComponentsInChildren<UnityEngine.Component>(true))
-            {
-                if (c == null) continue;
-                var n = c.GetType().Name;
-                if (n.EndsWith("Collider")) UnityEngine.Object.Destroy(c);
-                else if (n == "Rigidbody") UnityEngine.Object.Destroy(c);
-            }
-            // Cancel the prefab's hand offsets so the lantern sits on the attach point.
-            visual.transform.localPosition = UnityEngine.Vector3.zero;
-            var equiped = visual.transform.Find("equiped");
-            if (equiped != null)
-            {
-                equiped.localPosition = UnityEngine.Vector3.zero;
-                var mesh = equiped.Find("default");
-                if (mesh != null) mesh.localPosition = UnityEngine.Vector3.zero;
-            }
-        }
+        internal static ItemStand Current;
 
-        private static void Postfix(ItemStand __instance)
-        {
-            var visual = HarmonyLib.Traverse.Create(__instance).Field("m_visualItem").GetValue<UnityEngine.GameObject>();
-            if (visual != null && __instance.name.StartsWith("itemstandh", StringComparison.OrdinalIgnoreCase))
-            {
-                var current = HarmonyLib.Traverse.Create(__instance).Field("m_currentItemName").GetValue<string>();
-                if (Plugin.IsAllowed(current, null)) FixLantern(visual);
-            }
-            if (!Plugin.LogItems.Value) return;
-            var other = __instance.m_attachOther;
-            Plugin.Log.LogInfo("UpdateAttach: stand='" + __instance.name + "' visual=" + (visual != null ? visual.name : "null") +
-                " attachOther=" + (other != null ? other.name + " pos=" + other.position : "null"));
-            if (visual == null) return;
-            Plugin.Log.LogInfo("  visual worldPos=" + visual.transform.position + " lossyScale=" + visual.transform.lossyScale);
-            foreach (var r in visual.GetComponentsInChildren<UnityEngine.Renderer>(true))
-                Plugin.Log.LogInfo("  renderer " + r.name + " enabled=" + r.enabled + " type=" + r.GetType().Name + " bounds=" + r.bounds.size);
-            ItemStandAttachPrefabPatch.LogHierarchyPublic(visual.transform);
-        }
+        private static void Prefix(ItemStand __instance) => Current = __instance;
+
+        // A finalizer runs even if the original method throws, so Current is always cleared.
+        private static void Finalizer() => Current = null;
     }
 
     [HarmonyPatch(typeof(ItemStand), "CanAttach")]
@@ -173,8 +200,7 @@ namespace LanternFrame
     {
         private static void Postfix(ItemStand __instance, ItemDrop.ItemData item, ref bool __result)
         {
-            // Horizontal item frame prefab is "itemstandh" (clones are named "itemstandh(Clone)").
-            if (!__instance.name.StartsWith("itemstandh", StringComparison.OrdinalIgnoreCase)) return;
+            if (!Plugin.IsSupportedStand(__instance)) return;
 
             if (Plugin.LogItems.Value && item != null)
                 Plugin.Log.LogInfo($"Attach attempt: prefab='{item.m_dropPrefab?.name}' shared='{item.m_shared?.m_name}'");

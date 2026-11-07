@@ -1,6 +1,6 @@
-# Lantern Frame
+﻿# Lantern Frame
 
-Lets you place a **lantern** on the **horizontal item frame** (`itemstandh`) in Valheim.
+Lets you place a **lantern** on the **horizontal and vertical item frames** in Valheim.
 
 The lantern is shown on the frame with its model and its warm light.
 
@@ -19,14 +19,21 @@ Install on every player that wants to place or see the lantern: the client decid
 
 | Setting | Default | Description |
 |---|---|---|
-| `AllowedItems` | `lantern` | Comma-separated, case-insensitive fragments. Any item whose prefab name or shared name contains one of them can be placed on the horizontal frame. |
+| `AllowedItems` | `lantern` | Comma-separated, case-insensitive fragments. Any item whose prefab name or shared name contains one of them can be placed on the frame. |
+| `AllowOnVerticalFrame` | `true` | Also allow the lantern on the vertical item frame. The horizontal frame is always supported. |
+| `CastShadows` | `true` | `true`: the lantern's light casts shadows so walls block it. `false`: no shadows. Restart after changing. |
+| `ShadowBias` / `ShadowNormalBias` | `0.01` / `0.02` | Lower values stop light leaking through thin walls (Unity's defaults are larger). Raise them if you see shadow artefacts. |
+| `RangeMultiplier` | `1` | Scales the light's range on the frame (0.1 to 2). Lower it to shorten the light. Restart after changing. |
 | `LogAttachAttempts` | `false` | Logs prefab names and what gets spawned on the frame. Useful for adding other items. |
 
 ## Known limitations
 
-- The lantern's model is hung from its hand-hold, so its orientation on the frame may not be perfect.
 - Its light keeps flickering while on the frame.
 
 ## Source
 
 See the GitHub repository for source and issues.
+
+
+
+

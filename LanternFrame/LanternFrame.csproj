@@ -3,7 +3,7 @@
     <TargetFramework>net48</TargetFramework>
     <LangVersion>latest</LangVersion>
     <AssemblyName>LanternFrame</AssemblyName>
-    <Version>1.0.0</Version>
+    <Version>1.1.0</Version>
     <!-- Override on the command line: -p:ValheimDir="..." -p:ProfileDir="..." -->
     <ValheimDir Condition="'$(ValheimDir)' == ''">C:\Program Files (x86)\Steam\steamapps\common\Valheim</ValheimDir>
     <!-- r2modman / Thunderstore Mod Manager profile (contains BepInEx\core). Defaults to the "Default" profile. -->
